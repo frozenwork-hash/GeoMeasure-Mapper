@@ -130,8 +130,12 @@ class PDFExporter(BaseExporter):
 
         writer = QPdfWriter(file_path)
         writer.setResolution(96)
+        
+        page_width = rect.width() * 0.75
+        page_height = rect.height() * 0.75
+
         writer.setPageSize(
-            QPageSize(QSizeF(rect.width(), rect.height()), QPageSize.Unit.Point)
+            QPageSize(QSizeF(page_width, page_height), QPageSize.Unit.Point)
         )
         writer.setPageMargins(QMarginsF(0, 0, 0, 0), QPageLayout.Unit.Point)
 
