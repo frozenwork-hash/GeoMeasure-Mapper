@@ -16,7 +16,7 @@ A PyQt6 desktop application for cartographic measurements. Load your fantasy map
 
 1. Clone the repository:
    ```bash
-   git clone [https://github.com/frozenwork-hash/GeoMeasure-Mapper.git](https://github.com/frozenwork-hash/GeoMeasure-Mapper.git)
+   git clone https://github.com/frozenwork-hash/GeoMeasure-Mapper.git
    cd GeoMeasure-Mapper
 
 2. Install dependencies:
