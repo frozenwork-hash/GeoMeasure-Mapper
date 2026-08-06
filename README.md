@@ -41,6 +41,51 @@ Built by a writer, for writers, worldbuilders, and game masters. When you're des
 - View results — distances are displayed per segment and per line.
 - Export — save your annotated map or export measurement data for further analysis.
 
+## Session file format (.gms)
+
+A `.gms` file is a **ZIP archive** containing:
+- `data.json` – project data (points, lines, compasses, grid settings).
+- `background.png` – the map image used as a background.
+
+You can open it with any ZIP tool or rename to `.zip` to inspect/edit its contents.
+
+### JSON structure (version 1.1)
+
+```json
+{
+  "version": "1.1",
+  "meters_per_pixel": 1419.3546,
+  "points": [
+    { "index": 1, "x": 2038.44, "y": 995.14 }
+  ],
+  "lines": [
+    { "p1_index": 1, "p2_index": 2, "color": "#43ff43" }
+  ],
+  "compasses": [
+    { "x": 3272.85, "y": 2787.38, "rotation": 0.0, "radius": 45, "ray_length": 2500 }
+  ],
+  "grid": {
+    "show_grid": true,
+    "grid_step_px": 70.45,
+    "grid_value": 100.0,
+    "grid_unit": "km"
+  }
+}
+
+- `version` – data format version (1.1).
+
+- `meters_per_pixel` – scale of the background image.
+
+- `points` – array of measured points with pixel coordinates.
+
+- `lines` – connections between points (by index) with a hex color.
+
+- `compasses` – compass rose overlays: position, rotation (degrees), radius, ray length (pixels).
+
+- `grid` – display settings for the measurement grid (unit can be any configured unit, e.g., km, m, custom).
+
+Note: Colors are stored as #rrggbb hex strings. Coordinates are in pixels relative to the background image.
+
 ## Contributing
 Issues and feature requests are welcome. Feel free to open an issue or submit a pull request.
 
