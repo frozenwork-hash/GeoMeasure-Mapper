@@ -41,15 +41,9 @@ from exporter import (
     PNGExporter,
 )
 
-UNIT_TO_METERS = {
-    "m": 1.0,
-    "km": 1000.0,
-    "miles (mi)": 1609.344,
-    "nautical miles (nmi)": 1852.0,
-    "feet (ft)": 0.3048,
-    "cm": 0.01,
-    "mm": 0.001,
-}
+from saver import SessionManager
+
+from unit_manager import UnitManager, UnitSettingsDialog
 
 ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".pdf"}
 IMAGE_FILE_FILTER = "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff, *.pdf);;PDF Documents (*.pdf)"
@@ -77,7 +71,7 @@ class CalibrationDialog(QDialog):
         layout.addRow("Real-world length:", self.spin_val)
 
         self.combo_unit = QComboBox()
-        self.combo_unit.addItems(list(UNIT_TO_METERS.keys()))
+        self.combo_unit.addItems(list(UnitManager.get_units().keys()))
         self.combo_unit.setCurrentText("km")
         layout.addRow("Unit:", self.combo_unit)
 
@@ -269,11 +263,24 @@ class SettingsDialog(QDialog):
         ])
         layout.addRow("Application window resolution:", self.combo_screen_res)
 
+        # --- ADDED: Button for configuring units ---
+        self.btn_units = QPushButton("Configure Units...")
+        self.btn_units.clicked.connect(self.open_unit_config)
+        layout.addRow("Measurement Units:", self.btn_units)
+        # --------------------------------------------------------
+
         # OK/Cancel buttons
         btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btn_box.accepted.connect(self.accept)
         btn_box.rejected.connect(self.reject)
         layout.addRow(btn_box)
+
+    # --- ADDED: Method for units window call ---
+    def open_unit_config(self):
+        from unit_manager import UnitSettingsDialog
+        dlg = UnitSettingsDialog(self)
+        dlg.exec()
+    # --------------------------------------------------------
 
     def get_values(self):
         return (
@@ -575,7 +582,7 @@ class InteractiveView(QGraphicsView):
             dlg = CalibrationDialog(dist_px, self)
             if dlg.exec() == QDialog.DialogCode.Accepted:
                 real_val, unit_name = dlg.get_values()
-                meters_val = real_val * UNIT_TO_METERS[unit_name]
+                meters_val = real_val * UnitManager.get_units()[unit_name]
                 self.meters_per_pixel = meters_val / dist_px
                 QMessageBox.information(
                     self,
@@ -646,6 +653,111 @@ class InteractiveView(QGraphicsView):
         if self.main_window:
             self.main_window.update_calculations()
 
+    def to_dict(self) -> dict:
+        """Serializes current points, lines, and scale into a dictionary."""
+        data = {
+            "version": "1.1",
+            "meters_per_pixel": self.meters_per_pixel,
+            "points": [],
+            "lines": [],
+            "compasses": [], 
+            "grid": {        
+                "show_grid": self.scene.show_grid,
+                "grid_step_px": getattr(self.scene, 'grid_step_px', 100.0),
+                "grid_value": getattr(self.scene, 'grid_value', 100.0),
+                "grid_unit": getattr(self.scene, 'grid_unit', "px (pixels)")
+            }
+        }
+        
+        # Save points
+        for pt in self.points:
+            data["points"].append({
+                "index": pt.index,
+                "x": pt.scenePos().x(),
+                "y": pt.scenePos().y()
+            })
+            
+        # Save lines
+        for line_data in self.lines:
+            data["lines"].append({
+                "p1_index": line_data["p1"].index,
+                "p2_index": line_data["p2"].index,
+                "color": line_data["item"].pen().color().name()
+            })
+        
+        # Сохранение компасов
+        for item in self.scene.items():
+            if type(item).__name__ == "CompassItem":
+                data["compasses"].append({
+                    "x": item.scenePos().x(),
+                    "y": item.scenePos().y(),
+                    "rotation": item.rotation(),
+                    "radius": getattr(item, 'radius', 45),
+                    "ray_length": getattr(item, 'ray_length', 2500)
+                })
+
+        return data
+
+    def from_dict(self, data: dict):
+        """Restores points, lines, and scale from a dictionary."""
+        from PyQt6.QtGui import QColor, QPen # Make sure these are available
+        
+        self.meters_per_pixel = data.get("meters_per_pixel")
+        
+        # 1. Reconstruct points
+        point_map = {} # To easily find points by their old index
+        for pt_data in data.get("points", []):
+            pt = PointItem(pt_data["x"], pt_data["y"], index=pt_data["index"], radius=9, view=self)
+            self.scene.addItem(pt)
+            self.points.append(pt)
+            point_map[pt.index] = pt
+            
+        # 2. Reconstruct lines
+        for line_data in data.get("lines", []):
+            p1 = point_map.get(line_data["p1_index"])
+            p2 = point_map.get(line_data["p2_index"])
+            
+            if p1 and p2:
+                color = QColor(line_data.get("color", "#00bfff"))
+                p1_pos = p1.scenePos()
+                p2_pos = p2.scenePos()
+                
+                line_item = self.scene.addLine(
+                    p1_pos.x(), p1_pos.y(),
+                    p2_pos.x(), p2_pos.y(),
+                    QPen(color, 3)
+                )
+                line_item.setZValue(1)
+                
+                self.lines.append({
+                    "item": line_item,
+                    "p1": p1,
+                    "p2": p2
+                })
+
+        # Grid
+        grid_data = data.get("grid", {})
+        if grid_data:
+            self.scene.show_grid = grid_data.get("show_grid", False)
+            self.scene.grid_step_px = grid_data.get("grid_step_px", 100.0)
+            self.scene.grid_value = grid_data.get("grid_value", 100.0)
+            self.scene.grid_unit = grid_data.get("grid_unit", "px (pixels)")
+            
+            # Repainting scene
+            from PyQt6.QtWidgets import QGraphicsScene
+            self.scene.invalidate(self.scene.sceneRect(), QGraphicsScene.SceneLayer.ForegroundLayer)
+
+        # Compasses
+        for c_data in data.get("compasses", []):
+            compass = CompassItem(
+                x=c_data.get("x", 0),
+                y=c_data.get("y", 0),
+                radius=c_data.get("radius", 45),
+                ray_length=c_data.get("ray_length", 2500)
+            )
+            compass.setRotation(c_data.get("rotation", 0.0)) 
+            self.scene.addItem(compass)
+
 
 class GridScene(QGraphicsScene):
     def __init__(self, parent=None):
@@ -702,7 +814,7 @@ class GridDialog(QDialog):
         self.combo_unit.addItems(["px (pixels)", "cm (on screen)"])
         # Only add real-world units if calibration has been done
         if is_calibrated:
-            self.combo_unit.addItems(list(UNIT_TO_METERS.keys()))
+            self.combo_unit.addItems(list(UnitManager.get_units().keys()))
 
         # Set the current value
         if current_unit:
@@ -801,7 +913,7 @@ class MainWindow(QMainWindow):
         out_unit_layout.setContentsMargins(0, 0, 0, 0)
         out_unit_layout.addWidget(QLabel("Units:"))
         self.combo_output_unit = QComboBox()
-        self.combo_output_unit.addItems(["px (pixels)"] + list(UNIT_TO_METERS.keys()))
+        self.combo_output_unit.addItems(["px (pixels)"] + list(UnitManager.get_units().keys()))
         self.combo_output_unit.setCurrentText("km")
         self.combo_output_unit.currentTextChanged.connect(self.update_calculations)
         out_unit_layout.addWidget(self.combo_output_unit)
@@ -849,6 +961,17 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(right_panel, stretch=1)
         self.setCentralWidget(main_widget)
+
+
+    # --- NEW SESSION BUTTONS ---
+        self.btn_save_session = QPushButton("Save Session (.gms)")
+        self.btn_save_session.clicked.connect(self.save_session)
+        panel_layout.addWidget(self.btn_save_session)
+
+        self.btn_load_session = QPushButton("Load Session (.gms)")
+        self.btn_load_session.clicked.connect(self.load_session)
+        panel_layout.addWidget(self.btn_load_session)
+        # ---------------------------
 
 
     def toggle_merge_mode(self, checked: bool):
@@ -1069,6 +1192,23 @@ class MainWindow(QMainWindow):
             if screen_res != "Don't change":
                 width, height = map(int, screen_res.split("x"))
                 self.resize(width, height)
+            
+            # --- ADDED: Update dropdown list of units ---
+            current_unit = self.combo_output_unit.currentText()
+
+            self.combo_output_unit.blockSignals(True)
+            self.combo_output_unit.clear()
+            from unit_manager import UnitManager # Импорт на всякий случай
+            self.combo_output_unit.addItems(["px (pixels)"] + list(UnitManager.get_units().keys()))
+            
+            # Возвращаем старый выбор, если он всё ещё существует, иначе сбрасываем на пиксели
+            if current_unit in UnitManager.get_units() or current_unit == "px (pixels)":
+                self.combo_output_unit.setCurrentText(current_unit)
+            else:
+                self.combo_output_unit.setCurrentText("px (pixels)")
+                
+            self.combo_output_unit.blockSignals(False)
+            self.update_calculations()
 
             self.set_status("System settings updated successfully.")
 
@@ -1104,7 +1244,7 @@ class MainWindow(QMainWindow):
             dist_u = dist_px
             if not use_px:
                 dist_m = dist_px * m_per_px
-                dist_u = dist_m / UNIT_TO_METERS[out_unit]
+                dist_u = dist_m / UnitManager.get_units()[out_unit]
                 total_unit += dist_u
 
             p1_idx = self.view.points.index(line_data["p1"]) + 1
@@ -1168,7 +1308,7 @@ class MainWindow(QMainWindow):
                     self.view.grid_step_px = val * 37.795
                 else:
                     # Calculation for real-world units
-                    meters = val * UNIT_TO_METERS[unit]
+                    meters = val * UnitManager.get_units()[unit]
                     self.view.scene.grid_step_px = meters / self.view.meters_per_pixel
 
             self.view.scene.invalidate(self.view.scene.sceneRect(), QGraphicsScene.SceneLayer.ForegroundLayer)
@@ -1282,6 +1422,39 @@ class MainWindow(QMainWindow):
         )
 
         self.info_text.setHtml(full_html)
+
+    def save_session(self):
+        if not self.view.scene.items():
+            QMessageBox.warning(self, "Error", "Nothing to save! Load a map first.")
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Session", "session.gms", "Geo-Measure Session (*.gms)"
+        )
+        
+        if not file_path:
+            return
+
+        try:
+            SessionManager.save(self.view, file_path)
+            self.set_status(f"Session saved successfully to {os.path.basename(file_path)}")
+            QMessageBox.information(self, "Success", "Session saved successfully.")
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Failed to save session:\n{str(e)}")
+
+    def load_session(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Load Session", "", "Geo-Measure Session (*.gms)"
+        )
+        
+        if not file_path:
+            return
+
+        try:
+            SessionManager.load(file_path, self)
+            self.set_status(f"Session loaded from {os.path.basename(file_path)}")
+        except Exception as e:
+            QMessageBox.critical(self, "Load Error", f"Failed to load session:\n{str(e)}")
 
     def export_data(self):
         """Exports the map, rendering the text directly onto the scene."""
