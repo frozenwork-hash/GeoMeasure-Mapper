@@ -71,6 +71,7 @@ You can open it with any ZIP tool or rename to `.zip` to inspect/edit its conten
     "grid_unit": "km"
   }
 }
+```
 
 - `version` – data format version (1.1).
 
