@@ -45,6 +45,10 @@ from saver import SessionManager
 
 from unit_manager import UnitManager, UnitSettingsDialog
 
+from modules.measurement_tools import AreaTool, AngleTool, FreehandTool
+
+from modules.measurement_dialog import MeasurementDialog
+
 ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".pdf"}
 IMAGE_FILE_FILTER = "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff, *.pdf);;PDF Documents (*.pdf)"
 
@@ -269,6 +273,10 @@ class SettingsDialog(QDialog):
         layout.addRow("Measurement Units:", self.btn_units)
         # --------------------------------------------------------
 
+        self.chk_show_labels = QCheckBox()
+        self.chk_show_labels.setChecked(show_labels)
+        layout.addRow("Show measurement labels on map:", self.chk_show_labels)
+
         # OK/Cancel buttons
         btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btn_box.accepted.connect(self.accept)
@@ -284,6 +292,10 @@ class SettingsDialog(QDialog):
 
     def get_values(self):
         return (
+            self.chk_auto_break.isChecked(),
+            self.spin_pdf_res.value(),
+            self.combo_screen_res.currentText(),
+            self.chk_show_labels.isChecked(),  
             self.chk_auto_break.isChecked(),
             self.spin_pdf_res.value(),
             self.combo_screen_res.currentText()
@@ -377,6 +389,43 @@ class InteractiveView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
 
+        self.current_tool = None
+        self.polygons = []
+        self.angles = []
+        self.freehand_lines = []
+        self.show_measurement_labels = True
+
+        
+
+    def set_tool_mode(self, mode_name: str):
+        if self.current_tool:
+            self.current_tool.cancel()
+            self.current_tool = None
+
+        if mode_name == "idle":
+            self.mode = "IDLE"
+            if self.main_window:
+                self.main_window.set_status("Advanced tools disabled. Normal mode active.")
+            return
+
+        from modules.measurement_tools import ShapeTool, AreaTool, AngleTool, FreehandTool
+        if mode_name == "shapes":
+            self.current_tool = ShapeTool(self)
+        elif mode_name == "area":
+            self.current_tool = AreaTool(self)
+        elif mode_name == "angle":
+            self.current_tool = AngleTool(self)
+        elif mode_name == "freehand":
+            self.current_tool = FreehandTool(self)
+            
+        if self.main_window:
+            self.main_window.set_status(f"Active tool: {mode_name.capitalize()}. Follow on-screen instructions.")
+
+    def set_labels_visible(self, visible: bool):
+        self.show_measurement_labels = visible
+        for item in self.scene.items():
+            if isinstance(item, QGraphicsTextItem) and item.parentItem() is not None:
+                item.setVisible(visible)
 
     def delete_point(self, point_item):
         """Deletes a point, removes the lines connected to it, and recalculates indices."""
@@ -493,6 +542,12 @@ class InteractiveView(QGraphicsView):
     def mousePressEvent(self, event):
         item = self.itemAt(event.position().toPoint())
 
+        if self.current_tool:
+            scene_pos = self.mapToScene(event.position().toPoint())
+            self.current_tool.mousePress(event, scene_pos)
+            if event.isAccepted():
+                return
+
         # 1. If left click on a point — always drag it
         if event.button() == Qt.MouseButton.LeftButton and isinstance(item, PointItem):
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
@@ -528,7 +583,24 @@ class InteractiveView(QGraphicsView):
 
         super().mousePressEvent(event)
 
+    def mouseMoveEvent(self, event):
+        # --- NEW BLOCK 1.2 ---
+        if self.current_tool:
+            scene_pos = self.mapToScene(event.position().toPoint())
+            self.current_tool.mouseMove(event, scene_pos)
+            if event.isAccepted():
+                return
+        # --------------------------------------------------------
+        super().mouseMoveEvent(event)
+
     def mouseReleaseEvent(self, event):
+
+        if self.current_tool:
+            scene_pos = self.mapToScene(event.position().toPoint())
+            self.current_tool.mouseRelease(event, scene_pos)
+            if event.isAccepted():
+                return
+
         if event.button() in (Qt.MouseButton.RightButton, Qt.MouseButton.MiddleButton):
             dummy_event = QMouseEvent(
                 event.type(),
@@ -542,6 +614,25 @@ class InteractiveView(QGraphicsView):
             return
 
         super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        # --- NEW BLOCK 1.2 ---
+        if self.current_tool:
+            scene_pos = self.mapToScene(event.position().toPoint())
+            self.current_tool.doubleClick(event, scene_pos)
+            if event.isAccepted():
+                return
+        # --------------------------------------------------------
+        super().mouseDoubleClickEvent(event)
+
+    def keyPressEvent(self, event):
+        # --- NB 1.2 ---
+        if self.current_tool:
+            self.current_tool.keyPress(event)
+            if event.isAccepted():
+                return
+        # --------------------------------------------------------
+        super().keyPressEvent(event)
 
     def handle_calibration_click(self, pos: QPointF):
         if self.calib_start is None:
@@ -596,6 +687,22 @@ class InteractiveView(QGraphicsView):
             self.reset_calibration_state()
             if self.main_window:
                 self.main_window.update_calculations()
+
+        # I dont know if this def works, and I dont know what it do
+        def apply_ruler_calibration(self, line_length_px: float):
+    
+            # 1. Запрашиваем у пользователя реальную длину и единицу
+            real_value, ok1 = QInputDialog.getDouble(None, "Калибровка", "Реальная длина отрезка:", 100.0, 0.0001, 1e9, 2)
+            if not ok1:
+                return
+        
+            unit, ok2 = QInputDialog.getText(None, "Калибровка", "Единица измерения (км, м, мили, лиги):", text="км")
+            if not ok2 or not unit.strip():
+                unit = "ед."
+
+            # 2. Сохраняем сценовый коэффициент в view
+            self.view.scale_ratio = real_value / line_length_px
+            self.view.scale_unit = unit.strip()
 
     def reset_calibration_state(self):
         """Safely resets the calibration state"""
@@ -656,7 +763,7 @@ class InteractiveView(QGraphicsView):
     def to_dict(self) -> dict:
         """Serializes current points, lines, and scale into a dictionary."""
         data = {
-            "version": "1.1",
+            "version": "1.2",
             "meters_per_pixel": self.meters_per_pixel,
             "points": [],
             "lines": [],
@@ -666,7 +773,10 @@ class InteractiveView(QGraphicsView):
                 "grid_step_px": getattr(self.scene, 'grid_step_px', 100.0),
                 "grid_value": getattr(self.scene, 'grid_value', 100.0),
                 "grid_unit": getattr(self.scene, 'grid_unit', "px (pixels)")
-            }
+            },
+            "polygons": [],
+            "angles": [],
+            "freehand_lines": []
         }
         
         # Save points
@@ -685,7 +795,7 @@ class InteractiveView(QGraphicsView):
                 "color": line_data["item"].pen().color().name()
             })
         
-        # Сохранение компасов
+        # Save compasses
         for item in self.scene.items():
             if type(item).__name__ == "CompassItem":
                 data["compasses"].append({
@@ -696,14 +806,59 @@ class InteractiveView(QGraphicsView):
                     "ray_length": getattr(item, 'ray_length', 2500)
                 })
 
+        # Saving Shapes / AreaTool
+        for poly in getattr(self, "polygons", []):
+            poly_data = {
+                "type": poly.get("type", "drawn_polygon"),
+                "area": poly.get("area", 0.0),
+                "unit": poly.get("unit", "px")
+            }
+            if "center" in poly and "radius" in poly:
+                poly_data["center"] = poly["center"]
+                poly_data["radius"] = poly["radius"]
+            
+            if "points" in poly:
+                pts = poly["points"]
+                poly_data["points"] = [(p.x(), p.y()) if isinstance(p, QPointF) else p for p in pts]
+
+            data["polygons"].append(poly_data)
+
+        # Saving AngleTool
+        for ang in getattr(self, "angles", []):
+            pts = ang.get("points", [])
+            pts_clean = [(p.x(), p.y()) if isinstance(p, QPointF) else p for p in pts]
+            data["angles"].append({
+                "points": pts_clean,
+                "degrees": ang.get("degrees", 0.0)
+            })
+
+        # Saving FreehandTool
+        for fh in getattr(self, "freehand_lines", []):
+            pts = fh.get("points", [])
+            pts_clean = [(p.x(), p.y()) if isinstance(p, QPointF) else p for p in pts]
+            data["freehand_lines"].append({
+                "points": pts_clean,
+                "length": fh.get("length", 0.0),
+                "unit": fh.get("unit", "px")
+            })
+
         return data
 
     def from_dict(self, data: dict):
         """Restores points, lines, and scale from a dictionary."""
-        from PyQt6.QtGui import QColor, QPen # Make sure these are available
+        from PyQt6.QtGui import QColor, QPen, QBrush, QPainterPath, QFont
+        from PyQt6.QtCore import QPointF, QRectF
+        from PyQt6.QtWidgets import QGraphicsPathItem, QGraphicsTextItem, QGraphicsScene
+        import math # Make sure these are available
         
         self.meters_per_pixel = data.get("meters_per_pixel")
-        
+        show_labels = getattr(self, "show_measurement_labels", True)
+
+        # Cleaning before load
+        self.polygons = []
+        self.angles = []
+        self.freehand_lines = []
+
         # 1. Reconstruct points
         point_map = {} # To easily find points by their old index
         for pt_data in data.get("points", []):
@@ -757,6 +912,138 @@ class InteractiveView(QGraphicsView):
             )
             compass.setRotation(c_data.get("rotation", 0.0)) 
             self.scene.addItem(compass)
+
+    # Polygons
+        for p_data in data.get("polygons", []):
+            shape_type = p_data.get("type", "drawn_polygon")
+            area_val = p_data.get("area", 0.0)
+            unit_val = p_data.get("unit", "px")
+
+            path = QPainterPath()
+            center_x, center_y = 0.0, 0.0
+
+            if shape_type == "Circle" and "center" in p_data and "radius" in p_data:
+                cx, cy = p_data["center"]
+                r = p_data["radius"]
+                path.addEllipse(QPointF(cx, cy), r, r)
+                center_x, center_y = cx, cy
+                pts_coords = []
+            else:
+                pts_coords = p_data.get("points", [])
+                if not pts_coords:
+                    continue
+                qpoints = [QPointF(pt[0], pt[1]) for pt in pts_coords]
+                path.moveTo(qpoints[0])
+                for pt in qpoints[1:]:
+                    path.lineTo(pt)
+                path.closeSubpath()
+                center_x = sum(pt.x() for pt in qpoints) / len(qpoints)
+                center_y = sum(pt.y() for pt in qpoints) / len(qpoints)
+
+            item = QGraphicsPathItem(path)
+            color = QColor(255, 140, 0) if shape_type == "drawn_polygon" else QColor(0, 150, 255)
+            item.setPen(QPen(color, 2.5))
+            item.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(), 50)))
+            self.scene.addItem(item)
+
+            label_item = QGraphicsTextItem(f"{area_val:.2f} {unit_val}²", item)
+            label_item.setDefaultTextColor(QColor(200, 80, 0) if shape_type == "drawn_polygon" else QColor(0, 100, 200))
+            label_item.setFont(QFont("sans-serif", 10, QFont.Weight.Bold))
+            label_item.setPos(QPointF(center_x - 20, center_y - 10))
+            label_item.setVisible(show_labels)
+
+            poly_entry = {
+                "type": shape_type,
+                "area": area_val,
+                "unit": unit_val,
+                "ui_item": item,
+                "ui_label": label_item
+            }
+            if "center" in p_data:
+                poly_entry["center"] = p_data["center"]
+                poly_entry["radius"] = p_data.get("radius")
+            if pts_coords:
+                poly_entry["points"] = pts_coords
+
+            self.polygons.append(poly_entry)
+
+
+        # Angles
+        for a_data in data.get("angles", []):
+            pts_coords = a_data.get("points", [])
+            if len(pts_coords) < 3:
+                continue
+            p1 = QPointF(pts_coords[0][0], pts_coords[0][1])
+            v = QPointF(pts_coords[1][0], pts_coords[1][1])
+            p2 = QPointF(pts_coords[2][0], pts_coords[2][1])
+
+            ang1 = math.degrees(math.atan2(p1.y() - v.y(), p1.x() - v.x()))
+            ang2 = math.degrees(math.atan2(p2.y() - v.y(), p2.x() - v.x()))
+            diff_deg = (ang2 - ang1) % 360.0
+            if diff_deg > 180.0:
+                diff_deg -= 360.0
+
+            path = QPainterPath()
+            path.moveTo(v)
+            path.arcTo(QRectF(v.x() - 30, v.y() - 30, 60, 60), -ang1, -diff_deg)
+            path.closeSubpath()
+
+            item = QGraphicsPathItem(path)
+            item.setPen(QPen(QColor(153, 50, 204), 2))
+            item.setBrush(QBrush(QColor(153, 50, 204, 60)))
+            self.scene.addItem(item)
+
+            line1 = self.scene.addLine(p1.x(), p1.y(), v.x(), v.y(), QPen(QColor(153, 50, 204), 2))
+            line2 = self.scene.addLine(v.x(), v.y(), p2.x(), p2.y(), QPen(QColor(153, 50, 204), 2))
+
+            degrees_val = a_data.get("degrees", abs(diff_deg))
+            label_item = QGraphicsTextItem(f"{degrees_val:.1f}°", item)
+            label_item.setDefaultTextColor(QColor(120, 20, 180))
+            label_item.setFont(QFont("sans-serif", 10, QFont.Weight.Bold))
+            label_item.setPos(QPointF(v.x() + 10, v.y() + 10))
+            label_item.setVisible(show_labels)
+
+            self.angles.append({
+                "points": pts_coords,
+                "degrees": degrees_val,
+                "ui_item": item,
+                "ui_label": label_item,
+                "ui_lines": [line1, line2]
+            })  
+
+        # Freehand
+        for fh_data in data.get("freehand_lines", []):
+            pts_coords = fh_data.get("points", [])
+            if len(pts_coords) < 2:
+                continue
+            qpoints = [QPointF(pt[0], pt[1]) for pt in pts_coords]
+
+            path = QPainterPath()
+            path.moveTo(qpoints[0])
+            for pt in qpoints[1:]:
+                path.lineTo(pt)
+
+            item = QGraphicsPathItem(path)
+            item.setPen(QPen(QColor(220, 20, 60), 2))
+            self.scene.addItem(item)
+
+            length_val = fh_data.get("length", 0.0)
+            unit_val = fh_data.get("unit", "px")
+            mid = qpoints[len(qpoints) // 2]
+
+            label_item = QGraphicsTextItem(f"{length_val:.2f} {unit_val}", item)
+            label_item.setDefaultTextColor(QColor(180, 0, 30))
+            label_item.setFont(QFont("sans-serif", 10, QFont.Weight.Bold))
+            label_item.setPos(mid)
+            label_item.setVisible(show_labels)
+
+            self.freehand_lines.append({
+                "points": pts_coords,
+                "length": length_val,
+                "unit": unit_val,
+                "ui_item": item,
+                "ui_label": label_item
+            })      
 
 
 class GridScene(QGraphicsScene):
@@ -918,6 +1205,13 @@ class MainWindow(QMainWindow):
         self.combo_output_unit.currentTextChanged.connect(self.update_calculations)
         out_unit_layout.addWidget(self.combo_output_unit)
         panel_layout.addWidget(out_unit_widget)
+        
+    
+        # NB 1.2
+        self.btn_adv_tools = QPushButton("Advanced Tools")
+        self.btn_adv_tools.setStyleSheet("background-color: #2a9d8f; color: white; font-weight: bold;")
+        self.btn_adv_tools.clicked.connect(self.open_measurement_tools)
+        panel_layout.addWidget(self.btn_adv_tools)
 
         # --- NEW BUTTON ---
         self.btn_new_line = QPushButton("Start New Line")
@@ -973,6 +1267,15 @@ class MainWindow(QMainWindow):
         panel_layout.addWidget(self.btn_load_session)
         # ---------------------------
 
+
+    def open_measurement_tools(self):
+        if not hasattr(self, 'measure_dialog') or self.measure_dialog is None:
+            self.measure_dialog = MeasurementDialog(self)
+            self.measure_dialog.tool_changed.connect(self.view.set_tool_mode)
+        
+        self.measure_dialog.show()
+        self.measure_dialog.raise_()
+        self.measure_dialog.activateWindow()
 
     def toggle_merge_mode(self, checked: bool):
         """Enables or disables the two-point merge mode."""
@@ -1149,6 +1452,36 @@ class MainWindow(QMainWindow):
         self.view.points.clear()
         self.view.lines.clear()
 
+        if self.view.current_tool:
+            self.view.current_tool.cancel()
+        
+        if hasattr(self.view, 'polygons'):
+            for poly in self.view.polygons:
+                if poly.get('ui_item') and poly['ui_item'].scene():
+                    self.view.scene.removeItem(poly['ui_item'])
+                if poly.get('ui_label') and poly['ui_label'].scene():
+                    self.view.scene.removeItem(poly['ui_label'])
+            self.view.polygons.clear()
+
+        if hasattr(self.view, 'angles'):
+            for ang in self.view.angles:
+                if ang.get('ui_item') and ang['ui_item'].scene():
+                    self.view.scene.removeItem(ang['ui_item'])
+                if ang.get('ui_label') and ang['ui_label'].scene():
+                    self.view.scene.removeItem(ang['ui_label'])
+                for line in ang.get('ui_lines', []):
+                    if line.scene():
+                        self.view.scene.removeItem(line)
+            self.view.angles.clear()
+
+        if hasattr(self.view, 'freehand_lines'):
+            for fh in self.view.freehand_lines:
+                if fh.get('ui_item') and fh['ui_item'].scene():
+                    self.view.scene.removeItem(fh['ui_item'])
+                if fh.get('ui_label') and fh['ui_label'].scene():
+                    self.view.scene.removeItem(fh['ui_label'])
+            self.view.freehand_lines.clear()
+
         # Reset the line-break flag when clearing
         if hasattr(self.view, '_break_line'):
             self.view._break_line = False
@@ -1182,11 +1515,12 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self.auto_break_on_color_change, self.pdf_max_resolution, self)
 
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            auto_break, pdf_res, screen_res = dlg.get_values()
+            show_labels, auto_break, pdf_res, screen_res = dlg.get_values()
 
             # Apply the boolean flags
             self.auto_break_on_color_change = auto_break
             self.pdf_max_resolution = pdf_res
+            self.view.set_labels_visible(show_labels)
 
             # Apply the physical window resolution
             if screen_res != "Don't change":
@@ -1218,6 +1552,12 @@ class MainWindow(QMainWindow):
         self.view.scene.clear()
         self.view.points.clear()
         self.view.lines.clear()
+        if hasattr(self.view, 'polygons'):
+            self.view.polygons.clear()
+        if hasattr(self.view, 'angles'):
+            self.view.angles.clear()
+        if hasattr(self.view, 'freehand_lines'):
+            self.view.freehand_lines.clear()
         self.view.meters_per_pixel = None
         self.info_text.clear()
 

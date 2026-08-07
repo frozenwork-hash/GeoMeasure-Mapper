@@ -54,6 +54,18 @@ class UnitManager:
         cls._units = DEFAULT_UNITS.copy()
         cls.save(cls._units)
 
+    @classmethod
+    def get_area_units(cls):
+        """Returns area units conversion factors relative to square meters (m²)."""
+        length_units = cls.get_units()
+        area_units = {}
+        for name, factor in length_units.items():
+            # factor is meters per unit
+            area_units[f"{name}²"] = factor ** 2
+        area_units["hectares (ha)"] = 10000.0
+        area_units["acres"] = 4046.8564224
+        return area_units
+
 
 class UnitSettingsDialog(QDialog):
     """UI dialog for configuring the list of units."""
