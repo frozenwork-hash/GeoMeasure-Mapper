@@ -4,6 +4,8 @@ __pycache__/
 *$py.class
 .venv/
 venv/
+venvmapper/
+saves/
 
 # PyInstaller / Build outputs
 build/

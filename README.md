@@ -87,6 +87,14 @@ You can open it with any ZIP tool or rename to `.zip` to inspect/edit its conten
 
 Note: Colors are stored as #rrggbb hex strings. Coordinates are in pixels relative to the background image.
 
+## V-1.2.0 Measurement
+A modular vector measurement engine built for spatial analysis, area estimation, and path simplification in PyQt6.
+
+* **Custom Area & Shape Tools**: Calculate polygonal surface areas using the Shoelace formula. Supports regular geometric shapes (circles, squares, $N$-sided polygons) and arbitrary user-defined boundaries.
+* **3-Point Angle Finder**: Interactive vertex angle measurement with dynamic visual arcs and automatic acute/obtuse angle formatting.
+* **Freehand Drawing with RDP Optimization**: Real-time freeform path sketching automatically simplified using the Ramer–Douglas–Peucker algorithm ($\epsilon = 2.0\text{ px}$) to compute exact total lengths.
+* **Non-Modal Control Panel**: Floating tool selector dialog (`MeasurementDialog`) for switching active tools without interrupting viewport navigation.
+
 ## Contributing
 Issues and feature requests are welcome. Feel free to open an issue or submit a pull request.
 
